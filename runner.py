@@ -45,7 +45,7 @@ class SdkRunner:
                     "Bash", "Write", "Edit", "Read", "NotebookEdit",
                     "Glob", "Grep", "KillBash", "BashOutput",
                 ],
-                permission_mode="bypassPermissions",
+                permission_mode="dontAsk",
                 max_turns=config.WEB_MAX_TURNS,
             )
         else:

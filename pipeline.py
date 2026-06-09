@@ -99,15 +99,16 @@ def run_pipeline(business_name: str, overview: str, *, dry_run: bool,
                  resume_run_id: str | None = None) -> str:
     ledger = Ledger()
     runner = get_runner(dry_run)
-    notion = get_notion(dry_run)
 
     if resume_run_id:
         run_id = resume_run_id
         run = ledger.get_run(run_id)
+        notion = get_notion(dry_run, run_id=run_id)
         print(f"[resume] {run_id} ({run['business_name']})")
     else:
         run_id = ledger.create_run(business_name, overview)
         run = ledger.get_run(run_id)
+        notion = get_notion(dry_run, run_id=run_id)
         run["run_page_id"] = notion.create_run_page(business_name)
         ledger.set_run_field(run_id, run_page_id=run["run_page_id"], status="running")
         print(f"[start] {run_id} ({business_name})")
