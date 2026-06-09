@@ -5,11 +5,16 @@
   エージェント出力 DB … 1行=1エージェント実行=個別ページ（本文=ページ本体）
   改善ウォッチ DB     … 1行=1ランの改善観測
 
-本番は NotionClient（REST直叩き）、ドライランは StubNotion。
-本番運用には Notion インテグレーショントークンを発行し、各DBを共有しておくこと。
+クライアント種別:
+  NotionClient    … NOTION_TOKEN 環境変数でREST直叩き
+  McpNotionClient … BIZPLAN_NOTION_MCP=1 のとき。操作をnotion_ops.jsonlに記録し、
+                    パイプライン完了後にClaudeがMCPツールで同期する。
+  StubNotion      … ドライランのみ。APIを一切叩かない。
 """
 from __future__ import annotations
 import json
+import os
+from pathlib import Path
 from typing import Any
 
 from . import config
@@ -159,6 +164,53 @@ class NotionClient:
         return page["id"]
 
 
+# --- MCP 遅延実行クライアント ------------------------------------------------
+class McpNotionClient:
+    """パイプライン中は操作をJSONLに記録し、完了後にClaudeがMCPで同期する。
+
+    各操作には $ref（シンボリックID）を付与。sync時にClaudeが実際のpage_idに解決する。
+    run後に `python -m bizplan sync-notion <run_id>` を呼ぶと操作一覧を出力するので、
+    ClaudeがNotion MCPツールを使って順番に実行する。
+    """
+
+    def __init__(self, ops_path: Path) -> None:
+        self._ops_path = ops_path
+        ops_path.parent.mkdir(parents=True, exist_ok=True)
+        ops_path.write_text("")
+
+    def _write(self, op: dict) -> None:
+        with open(self._ops_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(op, ensure_ascii=False) + "\n")
+
+    def create_run_page(self, business_name: str) -> str:
+        self._write({"op": "create_run_page", "ref": "$run",
+                     "business_name": business_name})
+        return "$run"
+
+    def update_run_page(self, page_id: str, *, status: str,
+                        weighted_total: float | None, decision: str | None) -> None:
+        self._write({"op": "update_run_page", "ref": page_id, "status": status,
+                     "weighted_total": weighted_total, "decision": decision})
+
+    def create_agent_page(self, run_page_id: str, agent_name: str) -> str:
+        ref = f"$agent_{agent_name}"
+        self._write({"op": "create_agent_page", "ref": ref,
+                     "run_ref": run_page_id, "agent_name": agent_name})
+        return ref
+
+    def finalize_agent_page(self, page_id: str, body_md: str,
+                            summary: str, score: float | None) -> None:
+        self._write({"op": "finalize_agent_page", "ref": page_id,
+                     "body_md": body_md, "summary": summary or "", "score": score})
+
+    def create_watch_page(self, run_page_id: str, business_name: str,
+                          body_md: str, summary: str) -> str:
+        self._write({"op": "create_watch_page", "ref": "$watch",
+                     "run_ref": run_page_id, "business_name": business_name,
+                     "body_md": body_md, "summary": summary or ""})
+        return "$watch"
+
+
 # --- スタブ -----------------------------------------------------------------
 class StubNotion:
     def __init__(self) -> None:
@@ -181,5 +233,10 @@ class StubNotion:
         return self._id("watch")
 
 
-def get_notion(dry_run: bool):
-    return StubNotion() if dry_run else NotionClient()
+def get_notion(dry_run: bool, run_id: str | None = None):
+    if dry_run:
+        return StubNotion()
+    if os.environ.get("BIZPLAN_NOTION_MCP"):
+        ops_path = config.RUNS_DIR / (run_id or "unknown") / "notion_ops.jsonl"
+        return McpNotionClient(ops_path)
+    return NotionClient()
